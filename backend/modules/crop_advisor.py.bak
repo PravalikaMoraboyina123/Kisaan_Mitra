@@ -1,0 +1,631 @@
+"""
+Crop Advisor module - Provides AI-powered crop recommendations and farming advice.
+Enhanced with strict JSON parsing, multilingual support, and robust error handling.
+"""
+
+import sys
+import os
+import json
+import re
+import hashlib
+from datetime import datetime
+
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+
+from utils.llm_client import get_response
+from config import SUPPORTED_LANGUAGES
+
+# Language-specific system prompts for crop advisor - STRICT JSON FORMAT
+SYSTEM_PROMPTS = {
+    "en": """You are an expert agricultural advisor helping Indian farmers.
+
+CRITICAL INSTRUCTIONS:
+- Use the EXACT crop, district, state, and sowing date provided
+- Do NOT give generic farming advice
+- Give PRACTICAL recommendations SPECIFIC to this crop and location
+- Mention common pests and diseases for THIS crop
+- Mention realistic fertilizer schedules for THIS crop
+- Mention expected harvest period based on the sowing date
+- Mention irrigation recommendations specific to this crop
+- Keep responses concise and useful for farmers
+- Respond ONLY in the user's language
+
+RESPOND WITH ONLY VALID JSON - NO OTHER TEXT:
+{
+  "seasonal_plan": "Field preparation and planting practices specific to this crop and sowing date",
+  "fertilizer_schedule": "Realistic fertilizer types, quantities, and application timing for this crop",
+  "pest_watch": "Common pests and diseases that affect this specific crop",
+  "harvest_window": "Expected harvest time based on sowing date and crop maturity period",
+  "tips": "Practical irrigation, water management, and other tips for this crop"
+}""",
+    
+    "hi": """आप एक विशेषज्ञ कृषि सलाहकार हैं जो भारतीय किसानों की मदद कर रहे हैं।
+
+महत्वपूर्ण निर्देश:
+- दिए गए फसल, जिले, राज्य और बुवाई की तारीख का ठीक उपयोग करें
+- सामान्य खेती की सलाह न दें
+- इस फसल और स्थान के लिए व्यावहारिक सुझाव दें
+- इस फसल के सामान्य कीटों और रोगों का उल्लेख करें
+- इस फसल के लिए यथार्थवादी उर्वरक अनुसूची का उल्लेख करें
+- बुवाई की तारीख के आधार पर अपेक्षित कटाई अवधि का उल्लेख करें
+- इस फसल के लिए विशिष्ट सिंचाई सुझाव दें
+- किसानों के लिए प्रतिक्रिया संक्षिप्त और उपयोगी रखें
+- केवल उपयोगकर्ता की भाषा में जवाब दें
+
+केवल वैध JSON के साथ प्रतिक्रिया दें - कोई अन्य पाठ नहीं:
+{
+  "seasonal_plan": "इस फसल और बुवाई की तारीख के अनुसार खेत की तैयारी और रोपण प्रथाएं",
+  "fertilizer_schedule": "इस फसल के लिए यथार्थवादी उर्वरक प्रकार, मात्रा और अनुप्रयोग समय",
+  "pest_watch": "सामान्य कीट और रोग जो इस विशिष्ट फसल को प्रभावित करते हैं",
+  "harvest_window": "बुवाई की तारीख और फसल की परिपक्वता अवधि के आधार पर अपेक्षित कटाई का समय",
+  "tips": "इस फसल के लिए व्यावहारिक सिंचाई, जल प्रबंधन और अन्य सुझाव"
+}""",
+    
+    "te": """మీరు భారతీయ రైతులకు సహాయం చేస్తున్న నిపుణుడైన వ్యవసాయ సలహాదారు.
+
+కీలక సూచనలు:
+- అందించిన ఖచ్చితమైన పంట, జిల్లా, రాష్ట్రం మరియు విత్తన తేదీని ఉపయోగించండి
+- సాధారణ వ్యవసాయ సలహా ఇవ్వకండి
+- ఈ పంట మరియు ప్రదేశానికి నిర్దిష్ట ఆచరణాత్మక సిఫారసులు ఇవ్వండి
+- ఈ పంటను ప్రభావితం చేసే సాధారణ తెగుళ్ల మరియు వ్యాధుల గురించి ప్రస్తావించండి
+- ఈ పంటకు అనుకూలమైన సారం షెడ్యూల్ గురించి ప్రస్తావించండి
+- విత్తన తేదీ ఆధారంగా ఆశించిన కోత కాలం గురించి ప్రస్తావించండి
+- ఈ పంటకు నిర్దిష్ట నీటిపాన సిఫారసులు ఇవ్వండి
+- రైతులకు ప్రతిక్రియ సంక్ష్‍మతగా ఉంచండి
+- వినియోగదారుని భాషలో మాత్రమే సమాధానం ఇవ్వండి
+
+కేవలం చెల్లుబాటు చేసే JSON తో సమాధానం ఇవ్వండి - ఇతర పాఠ్యం లేదు:
+{
+  "seasonal_plan": "ఈ పంట మరియు విత్తన తేదీకి సంబంధించిన క్షేత్ర తయారీ మరియు నాటడం పద్ధతులు",
+  "fertilizer_schedule": "ఈ పంటకు వాస్తవిక సారం రకాలు, పరిమాణాలు మరియు అనువర్తన సమయం",
+  "pest_watch": "ఈ నిర్దిష్ట పంటను ప్రభావితం చేసే సాధారణ తెగుళ్లు మరియు వ్యాధులు",
+  "harvest_window": "విత్తన తేదీ మరియు పంట పరిపక్వత కాలం ఆధారంగా ఆశించిన కోత సమయం",
+  "tips": "ఈ పంటకు ఆచరణాత్మక నీటిపాన, నీటి నిర్వహణ మరియు ఇతర సలహాలు"
+}""",
+}
+
+# Crop-specific knowledge base to ensure different responses
+CROP_KNOWLEDGE_BASE = {
+    "Wheat/गेहूं": {
+        "en": {
+            "maturity_days": "120-150",
+            "common_pests": "Armyworm, Aphids, Shoot fly, Termites",
+            "common_diseases": "Rust, Powdery mildew, Septoria leaf blotch",
+            "npk_ratio": "120:60:40",
+            "fertilizer_timing": "Basal at sowing, 1st split at 4-6 weeks, 2nd split at 8-10 weeks",
+            "irrigation": "3-4 irrigations at CRI, tillering, boot stage, grain filling",
+            "seed_rate": "100-125 kg/ha",
+            "planting_depth": "3-4 cm",
+            "spacing": "20-23 cm between rows"
+        },
+        "hi": {
+            "maturity_days": "120-150 दिन",
+            "common_pests": "आर्मीवर्म, एफिड्स, शूट फ्लाई, दीमक",
+            "common_diseases": "जंग, पाउडरी मिल्ड्यू, सेप्टोरिया पत्ती धब्बा",
+            "npk_ratio": "120:60:40",
+            "fertilizer_timing": "बुवाई पर, 4-6 सप्ताह पर, 8-10 सप्ताह पर",
+            "irrigation": "CRI, कल्लों निकलते समय, बूट स्टेज, दानों भरते समय",
+            "seed_rate": "100-125 किग्रा/हेक्टेयर",
+            "planting_depth": "3-4 सेमी",
+            "spacing": "पंक्तियों के बीच 20-23 सेमी"
+        }
+    },
+    "Rice/धान": {
+        "en": {
+            "maturity_days": "100-150",
+            "common_pests": "Leaf folder, Plant hopper, Stem borer, Scale insect",
+            "common_diseases": "Blast, Sheath rot, Bacterial leaf streak",
+            "npk_ratio": "80:40:40",
+            "fertilizer_timing": "Basal, at panicle initiation, at heading",
+            "irrigation": "Continuous submergence, drain 10-15 days before harvest",
+            "seed_rate": "60-80 kg/ha (transplanted), 120-150 kg/ha (direct)",
+            "planting_depth": "2-3 cm",
+            "spacing": "20-25 cm x 15-20 cm for transplanted rice"
+        },
+        "hi": {
+            "maturity_days": "100-150 दिन",
+            "common_pests": "पत्ती फ़ोल्डर, प्लांटहॉपर, तना छेदक",
+            "common_diseases": "ब्लास्ट, शीथ राट, जीवाणु पत्ती धारी",
+            "npk_ratio": "80:40:40",
+            "fertilizer_timing": "बेसल, पैनिकल शुरुआत पर, हेडिंग पर",
+            "irrigation": "निरंतर जलभराव, कटाई से 10-15 दिन पहले निकास",
+            "seed_rate": "60-80 किग्रा/हेक्टेयर (रोपित), 120-150 किग्रा/हेक्टेयर (सीधा)",
+            "planting_depth": "2-3 सेमी",
+            "spacing": "20-25 सेमी x 15-20 सेमी"
+        }
+    },
+    "Cotton/कपास": {
+        "en": {
+            "maturity_days": "160-200",
+            "common_pests": "Bollworm, Jassids, Whiteflies, Spider mite, Thrips",
+            "common_diseases": "Leaf curl, Wilt, Anthracnose, Bacterial blight",
+            "npk_ratio": "100:50:50",
+            "fertilizer_timing": "Basal, at flowering, at boll formation",
+            "irrigation": "6-8 irrigations, critical at flowering and boll stages",
+            "seed_rate": "20-25 kg/ha",
+            "planting_depth": "2-3 cm",
+            "spacing": "90-120 cm x 45-60 cm"
+        },
+        "hi": {
+            "maturity_days": "160-200 दिन",
+            "common_pests": "बॉलवर्म, जैसिड्स, सफेद मक्खियां, मकड़ी की दहन",
+            "common_diseases": "पत्ती मोड़, विल्ट, एन्थ्रेकनोस, जीवाणु तुषार",
+            "npk_ratio": "100:50:50",
+            "fertilizer_timing": "बेसल, पुष्पन पर, बोल निर्माण पर",
+            "irrigation": "6-8 सिंचाई, फूल और बोल स्टेज पर महत्वपूर्ण",
+            "seed_rate": "20-25 किग्रा/हेक्टेयर",
+            "planting_depth": "2-3 सेमी",
+            "spacing": "90-120 सेमी x 45-60 सेमी"
+        }
+    },
+    "Maize/मक्का": {
+        "en": {
+            "maturity_days": "90-120",
+            "common_pests": "Stem borer, Fall armyworm, Shoot fly, Termites",
+            "common_diseases": "Leaf blight, Turcicum leaf blight, Rust, Downy mildew",
+            "npk_ratio": "120:60:60",
+            "fertilizer_timing": "At sowing, 4-6 weeks, at tasseling stage",
+            "irrigation": "4-6 irrigations, critical at silking stage",
+            "seed_rate": "20-25 kg/ha",
+            "planting_depth": "5-7 cm",
+            "spacing": "60-75 cm x 20-25 cm"
+        },
+        "hi": {
+            "maturity_days": "90-120 दिन",
+            "common_pests": "तना छेदक, फॉल आर्मीवर्म, शूट फ्लाई, दीमक",
+            "common_diseases": "पत्ती धब्बा, Turcicum पत्ती धब्बा, जंग, डाउनी मिल्ड्यू",
+            "npk_ratio": "120:60:60",
+            "fertilizer_timing": "बुवाई पर, 4-6 सप्ताह, टैसलिंग स्टेज पर",
+            "irrigation": "4-6 सिंचाई, रेशम स्टेज पर महत्वपूर्ण",
+            "seed_rate": "20-25 किग्रा/हेक्टेयर",
+            "planting_depth": "5-7 सेमी",
+            "spacing": "60-75 सेमी x 20-25 सेमी"
+        }
+    },
+    "Tomato/टमाटर": {
+        "en": {
+            "maturity_days": "60-90",
+            "common_pests": "Fruit borer, Whiteflies, Aphids, Spider mite, Thrips",
+            "common_diseases": "Early blight, Late blight, Wilt, Leaf curl",
+            "npk_ratio": "100:50:100",
+            "fertilizer_timing": "At planting, 30 days, 60 days after planting",
+            "irrigation": "Frequent, drip irrigation recommended, avoid leaf wetting",
+            "seed_rate": "500-700 g/ha",
+            "planting_depth": "Seedlings, 45-60 cm height",
+            "spacing": "60-90 cm x 45-60 cm"
+        },
+        "hi": {
+            "maturity_days": "60-90 दिन",
+            "common_pests": "फल छेदक, सफेद मक्खियां, एफिड्स, मकड़ी की दहन",
+            "common_diseases": "अर्ली ब्लाइट, लेट ब्लाइट, विल्ट, पत्ती मोड़",
+            "npk_ratio": "100:50:100",
+            "fertilizer_timing": "रोपण पर, 30 दिन, 60 दिन बाद",
+            "irrigation": "बार-बार, ड्रिप सिंचाई अनुशंसित, पत्ती को गीला न करें",
+            "seed_rate": "500-700 ग्राम/हेक्टेयर",
+            "planting_depth": "पौधे, 45-60 सेमी ऊंचाई",
+            "spacing": "60-90 सेमी x 45-60 सेमी"
+        }
+    },
+    "Sugarcane/गन्ना": {
+        "en": {
+            "maturity_days": "300-360",
+            "common_pests": "Stem borer, Scale insect, Shoot fly, Termites",
+            "common_diseases": "Red rot, Smut, Wilt, Leaf scald",
+            "npk_ratio": "150:60:40",
+            "fertilizer_timing": "Basal, at 4-6 months, at 8-10 months",
+            "irrigation": "12-16 irrigations, critical at sprouting and growth stages",
+            "seed_rate": "45-60 tonnes/ha (seed material)",
+            "planting_depth": "3-5 cm",
+            "spacing": "90-120 cm between rows"
+        },
+        "hi": {
+            "maturity_days": "300-360 दिन",
+            "common_pests": "तना छेदक, स्केल कीट, शूट फ्लाई, दीमक",
+            "common_diseases": "रेड राट, स्मट, विल्ट, पत्ती दहन",
+            "npk_ratio": "150:60:40",
+            "fertilizer_timing": "बेसल, 4-6 महीने, 8-10 महीने",
+            "irrigation": "12-16 सिंचाई, अंकुरण और वृद्धि स्टेज पर महत्वपूर्ण",
+            "seed_rate": "45-60 टन/हेक्टेयर (बीज सामग्री)",
+            "planting_depth": "3-5 सेमी",
+            "spacing": "90-120 सेमी पंक्ति के बीच"
+        }
+    },
+    "Groundnut/मूंगफली": {
+        "en": {
+            "maturity_days": "120-150",
+            "common_pests": "Leaf miner, Aphids, Jassids, Spider mite",
+            "common_diseases": "Leaf spot, Rust, Stem rot, Root rot",
+            "npk_ratio": "20:50:40",
+            "fertilizer_timing": "Basal at sowing, no split doses required",
+            "irrigation": "3-4 irrigations, critical at flowering and pod development",
+            "seed_rate": "40-50 kg/ha",
+            "planting_depth": "4-5 cm",
+            "spacing": "30-45 cm x 10-15 cm"
+        },
+        "hi": {
+            "maturity_days": "120-150 दिन",
+            "common_pests": "पत्ती खनिक, एफिड्स, जैसिड्स, मकड़ी की दहन",
+            "common_diseases": "पत्ती धब्बा, जंग, तना सड़न, मूल सड़न",
+            "npk_ratio": "20:50:40",
+            "fertilizer_timing": "बुवाई पर बेसल, विभाजन की आवश्यकता नहीं",
+            "irrigation": "3-4 सिंचाई, फूल और फली विकास पर महत्वपूर्ण",
+            "seed_rate": "40-50 किग्रा/हेक्टेयर",
+            "planting_depth": "4-5 सेमी",
+            "spacing": "30-45 सेमी x 10-15 सेमी"
+        }
+    },
+    "Onion/प्याज": {
+        "en": {
+            "maturity_days": "120-150",
+            "common_pests": "Thrips, Stem fly, Spider mite, Scale insect",
+            "common_diseases": "Purple blotch, Pink root, Damping off, Fusarium rot",
+            "npk_ratio": "80:80:80",
+            "fertilizer_timing": "Basal, 30 days after planting, 60 days after planting",
+            "irrigation": "8-10 irrigations, frequent and light to maintain moisture",
+            "seed_rate": "6-8 kg/ha",
+            "planting_depth": "Just below soil surface (sets)",
+            "spacing": "15-20 cm between rows, 10-15 cm between sets"
+        },
+        "hi": {
+            "maturity_days": "120-150 दिन",
+            "common_pests": "थ्रिप्स, तना मक्खी, मकड़ी की दहन, स्केल कीट",
+            "common_diseases": "बैंगनी धब्बा, गुलाबी जड़, डैम्पिंग ऑफ, फ्यूजेरियम सड़न",
+            "npk_ratio": "80:80:80",
+            "fertilizer_timing": "बेसल, रोपण के 30 दिन बाद, 60 दिन बाद",
+            "irrigation": "8-10 सिंचाई, नमी बनाए रखने के लिए हल्की और बार-बार",
+            "seed_rate": "6-8 किग्रा/हेक्टेयर",
+            "planting_depth": "मिट्टी की सतह से बस नीचे (सेट्स)",
+            "spacing": "पंक्तियों के बीच 15-20 सेमी, सेट्स के बीच 10-15 सेमी"
+        }
+    }
+}
+
+
+def _get_crop_knowledge(crop: str, lang: str) -> dict:
+    """Get crop-specific knowledge from the database."""
+    # Extract crop name without translation
+    crop_name = crop.split('/')[0] if '/' in crop else crop
+    
+    # Try exact match first
+    if crop in CROP_KNOWLEDGE_BASE:
+        return CROP_KNOWLEDGE_BASE[crop].get(lang, {})
+    
+    # Try partial match
+    for key in CROP_KNOWLEDGE_BASE:
+        if crop_name.lower() in key.lower():
+            return CROP_KNOWLEDGE_BASE[key].get(lang, {})
+    
+    return {}
+FALLBACK_RESPONSES = {
+    "en": {
+        "seasonal_plan": "Prepare your field well by plowing and removing debris. Ensure proper seed treatment before sowing.",
+        "fertilizer_schedule": "Apply basal fertilizer at the time of sowing. Use split doses for nitrogen applications during the growing season.",
+        "pest_watch": "Monitor regularly for common pests and diseases. Use integrated pest management practices.",
+        "harvest_window": "Harvest when the crop reaches full maturity. Avoid harvesting during wet conditions.",
+        "tips": "Maintain proper irrigation, remove weeds regularly, and conduct a soil test before applying additional fertilizer."
+    },
+    "hi": {
+        "seasonal_plan": "अपने खेत को अच्छी तरह तैयार करें। बीज उपचार सुनिश्चित करें।",
+        "fertilizer_schedule": "बुवाई के समय आधार उर्वरक लागू करें। बढ़ते मौसम में विभाजित खुराकें लागू करें।",
+        "pest_watch": "नियमित रूप से कीटों और रोगों की निगरानी करें। कीट प्रबंधन प्रथाओं का उपयोग करें।",
+        "harvest_window": "जब फसल पूरी परिपक्वता तक पहुंचे तब कटाई करें।",
+        "tips": "उचित सिंचाई बनाए रखें, नियमित रूप से खरपतवार निकालें।"
+    },
+    "te": {
+        "seasonal_plan": "మీ క్షేత్రాన్ని బాగా సిద్ధం చేయండి. విత్తన చికిత్స నిశ్చితం చేయండి.",
+        "fertilizer_schedule": "విత్తన సమయంలో ఆధార సారం వర్తించండి. పెరుగుతున్న సీజన్‌లో విభజిత కొవ్వులను వర్తించండి.",
+        "pest_watch": "సాధారణ తెగుళ్ల మరియు వ్యాధుల కోసం క్రమం తప్పకుండా పర్యవేక్షణ చేయండి.",
+        "harvest_window": "ఫసల్ పూర్తి పరిపక్వతకు చేరుకున్నప్పుడు కోయండి.",
+        "tips": "సరైన నీటిపానం నిర్వహించండి, నియమిత ఆధారంపై కలుపులను తీసివేయండి."
+    }
+}
+
+
+def _extract_json_from_response(response: str) -> dict:
+    """Extract JSON from response, handling potential formatting issues."""
+    print("=" * 80)
+    print("RAW LLM RESPONSE:")
+    print(response)
+    print("=" * 80)
+    
+    # Try to find JSON in the response
+    json_match = re.search(r'\{.*\}', response, re.DOTALL)
+    
+    if json_match:
+        json_str = json_match.group(0)
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            # Try to repair common JSON issues
+            print("🔧 Attempting to repair malformed JSON...")
+            json_str = json_str.replace("'", '"')  # Single to double quotes
+            json_str = re.sub(r',\s*}', '}', json_str)  # Remove trailing commas
+            json_str = re.sub(r',\s*]', ']', json_str)  # Remove trailing commas in arrays
+            try:
+                return json.loads(json_str)
+            except json.JSONDecodeError as e:
+                print(f"❌ Failed to repair JSON: {e}")
+                return None
+    
+    return None
+
+
+def _generate_response_from_knowledge_base(crop: str, district: str, state: str, sowing_date: str, lang: str) -> dict:
+    """Generate response directly from knowledge base to guarantee crop-specific answers."""
+    crop_info = _get_crop_knowledge(crop, lang)
+    
+    if not crop_info:
+        return None
+    
+    print(f"✅ Generating response from knowledge base for {crop} in {lang}")
+    
+    # Calculate harvest date
+    try:
+        maturity = crop_info.get("maturity_days", "90-120")
+        # Extract first number from range like "120-150"
+        if "-" in str(maturity):
+            days = int(str(maturity).split("-")[0])
+        else:
+            days = int("".join(filter(str.isdigit, str(maturity))))
+    except:
+        days = 120
+    
+    # Generate templated response with crop-specific data
+    if lang == "hi":
+        seasonal = f"खेत की तैयारी:\n{crop} के लिए मिट्टी को अच्छी तरह तैयार करें। बुवाई की गहराई: {crop_info.get('planting_depth', '3-4 सेमी')}। पंक्ति की दूरी: {crop_info.get('spacing', '20-23 सेमी')}। {district}, {state} में बुवाई {sowing_date} को करें।"
+        
+        fertilizer = f"उर्वरक योजना:\nNPK अनुपात {crop_info.get('npk_ratio', '120:60:40')} का उपयोग करें।\nआवेदन समय: {crop_info.get('fertilizer_timing', 'बुवाई पर, 4-6 सप्ताह, 8-10 सप्ताह')}"
+        
+        pests = f"कीट और रोग नियंत्रण:\nकीट: {crop_info.get('common_pests', 'विभिन्न कीट')}\nरोग: {crop_info.get('common_diseases', 'विभिन्न रोग')}\nनियमित निरीक्षण और समय पर कीटनाशक उपचार आवश्यक है।"
+        
+        harvest = f"कटाई का समय:\nपरिपक्वता अवधि: {crop_info.get('maturity_days', '120-150 दिन')}\n{sowing_date} से लगभग {days} दिन बाद कटाई के लिए तैयार होगी।"
+        
+        tips = f"महत्वपूर्ण सुझाव:\nसिंचाई: {crop_info.get('irrigation', 'आवश्यकतानुसार')}\nसमय पर निराई-गुड़ाई करें और कटाई के बाद उचित भंडारण सुनिश्चित करें।"
+    
+    elif lang == "te":
+        seasonal = f"క్షేత్ర సిద్ధీకరణ:\n{crop} కోసం మట్టిని బాగా సిద్ధం చేయండి. విత్తన లోతు: {crop_info.get('planting_depth', '3-4 సెం.మీ')}. వరుస దూరం: {crop_info.get('spacing', '20-23 సెం.మీ')}. {district}, {state} లో {sowing_date} న విత్తన చేయండి."
+        
+        fertilizer = f"సారం షెడ్యూల్:\nNPK నిష్పత్తి {crop_info.get('npk_ratio', '120:60:40')} ఉపయోగించండి.\nఅనువర్తన సమయం: {crop_info.get('fertilizer_timing', 'విత్తన సమయంలో, 4-6 వారాలలో, 8-10 వారాలలో')}"
+        
+        pests = f"కీటకాలు మరియు వ్యాధుల నియంత్రణ:\nకీటకాలు: {crop_info.get('common_pests', 'వివిధ కీటకాలు')}\nవ్యాధులు: {crop_info.get('common_diseases', 'వివిధ వ్యాధులు')}\nక్రమం తప్పకుండా పర్యవేక్షణ మరియు సమయ కీటకనాశకం చికిత్స అవసరం."
+        
+        harvest = f"కోత సమయం:\nపరిపక్వత కాలం: {crop_info.get('maturity_days', '120-150 రోజులు')}\n{sowing_date} నుండి సుమారు {days} రోజుల తర్వాత కోయటానికి సిద్ధమవుతుంది."
+        
+        tips = f"ముఖ్యమైన చిట్కాలు:\nనీటిపాన: {crop_info.get('irrigation', 'అవసరమైన విధంగా')}\nసమయానికి సాలెపు చేయండి మరియు కోత తర్వాత సరైన నిల్వ నిర్ధారించండి."
+        
+        harvest = f"{crop} కోసం కోత కాలం: పరిపక్వత కాలం {crop_info.get('maturity_days', '120-150 రోజులు')} ఉంది. {sowing_date} నుండి సుమారు {days} రోజుల తర్వాత కోయటానికి సిద్ధమవుతుంది."
+        
+        tips = f"{crop} కోసం చిట్కాలు: నీటిపాన {crop_info.get('irrigation', 'అవసరమైన విధంగా')}. {crop} విజయవంతమైన సాగు కోసం సময়సమర్థమైన నిర్వహణ ఆవశ్యక."
+    
+    else:  # English or default
+        seasonal = f"Field preparation:\nPrepare soil thoroughly for {crop}. Planting depth: {crop_info.get('planting_depth', '3-4 cm')}. Row spacing: {crop_info.get('spacing', '20-23 cm')}. Sow on {sowing_date} in {district}, {state}."
+        
+        fertilizer = f"Fertilizer schedule:\nApply NPK ratio of {crop_info.get('npk_ratio', '120:60:40')}.\nApplication timing: {crop_info.get('fertilizer_timing', 'At sowing, 4-6 weeks, 8-10 weeks')}"
+        
+        pests = f"Pest and disease management:\nPests: {crop_info.get('common_pests', 'various pests')}\nDiseases: {crop_info.get('common_diseases', 'various diseases')}\nRegular monitoring and timely pesticide treatment required."
+        
+        harvest = f"Harvest window:\nMaturity period: {crop_info.get('maturity_days', '120-150 days')}\nApproximately {days} days after sowing on {sowing_date}, your {crop} will be ready for harvest."
+        
+        tips = f"Important tips:\nIrrigation: {crop_info.get('irrigation', 'as needed')}\nPerform timely weeding and ensure proper storage after harvest."
+    
+    return {
+        "seasonal_plan": seasonal,
+        "fertilizer_schedule": fertilizer,
+        "pest_watch": pests,
+        "harvest_window": harvest,
+        "tips": tips
+    }
+
+
+def _is_response_crop_specific(response_dict: dict, crop: str) -> bool:
+    """Validate that response is specific to the crop, not generic."""
+    crop_lower = crop.lower().split('/')[0]
+    
+    # Count how many fields contain crop-specific keywords
+    specific_count = 0
+    for field, content in response_dict.items():
+        if isinstance(content, str) and content:
+            # Check for crop-specific content
+            if (crop_lower in content.lower() or 
+                "this crop" in content.lower() or
+                "specific" in content.lower() or
+                len(content) > 100):  # Substantial content
+                specific_count += 1
+    
+    # At least 3 fields should be crop-specific
+    return specific_count >= 3
+
+
+
+def get_crop_advice(
+    crop: str,
+    district: str,
+    state: str,
+    sowing_date: str,
+    lang: str = "en",
+    settings: dict = None
+) -> dict:
+    """
+    Get comprehensive crop advice from AI based on crop type, location, and sowing date.
+    
+    Args:
+        crop: Name of the crop (e.g., "Wheat/गेहूं")
+        district: District name
+        state: State name
+        sowing_date: Date of sowing (YYYY-MM-DD format)
+        lang: Language code ("en", "hi", or "te")
+        settings: AI provider settings dictionary
+    
+    Returns:
+        dict: Contains seasonal_plan, fertilizer_schedule, pest_watch, harvest_window, tips
+              Always returns all 5 fields with content (never empty)
+              Returns error dict on failure
+    """
+    if settings is None:
+        settings = {"provider": "ollama", "model": "llama3"}
+    
+    if lang not in SUPPORTED_LANGUAGES:
+        lang = "en"
+    
+    try:
+        # Debug: Print received parameters
+        print("\n" + "=" * 80)
+        print("🚀 RECEIVED PARAMETERS:")
+        print(f"   Crop: {crop}")
+        print(f"   District: {district}")
+        print(f"   State: {state}")
+        print(f"   Sowing Date: {sowing_date}")
+        print(f"   Language: {lang}")
+        print("=" * 80)
+        # Create unique identifier to prevent caching
+        unique_id = hashlib.md5(f"{crop}{district}{state}{sowing_date}".encode()).hexdigest()[:8]
+        timestamp = datetime.now().isoformat()
+        
+        # Get crop-specific knowledge
+        crop_info = _get_crop_knowledge(crop, lang)
+        
+        # Build crop-specific data section
+        crop_data_section = ""
+        if crop_info:
+            crop_data_section = f"""
+CROP-SPECIFIC DATA FOR {crop.upper()}:
+- Maturity Period: {crop_info.get('maturity_days', 'N/A')} days
+- Common Pests: {crop_info.get('common_pests', 'N/A')}
+- Common Diseases: {crop_info.get('common_diseases', 'N/A')}
+- NPK Ratio: {crop_info.get('npk_ratio', 'N/A')}
+- Fertilizer Schedule: {crop_info.get('fertilizer_timing', 'N/A')}
+- Irrigation Needs: {crop_info.get('irrigation', 'N/A')}
+- Seed Rate: {crop_info.get('seed_rate', 'N/A')}
+- Planting Depth: {crop_info.get('planting_depth', 'N/A')}
+- Row Spacing: {crop_info.get('spacing', 'N/A')}
+"""
+        
+        # Construct the user prompt with crop-specific data
+        prompt = f"""[REQUEST_ID: {unique_id} at {timestamp}]
+
+⚠️ CRITICAL: Provide advice for {crop.upper()} ONLY.
+{crop_data_section}
+
+The farmer is growing: {crop}
+District: {district}
+State: {state}
+Sowing Date: {sowing_date}
+
+YOUR TASK: Give agricultural advice SPECIFIC to {crop} using the data provided above.
+
+INSTRUCTIONS:
+1. Do NOT give generic advice
+2. Do NOT copy responses from other crops
+3. Use the crop-specific data provided above
+4. Reference specific pests, diseases, NPK values, irrigation, and maturity from the data
+5. Calculate harvest date from {sowing_date} + maturity days for {crop}
+6. Every field must mention {crop} specifically
+
+seasonal_plan: 
+What should a farmer growing {crop} do?
+- Use planting depth: {crop_info.get('planting_depth', 'standard')}
+- Use spacing: {crop_info.get('spacing', 'standard')}
+- Specific soil preparation for {crop}
+
+fertilizer_schedule: 
+What does {crop} need?
+- Use NPK ratio: {crop_info.get('npk_ratio', 'N/A')}
+- Use schedule: {crop_info.get('fertilizer_timing', 'N/A')}
+- Specific application for {crop}
+
+pest_watch: 
+What attacks {crop}?
+- Pests: {crop_info.get('common_pests', 'check reference sources')}
+- Diseases: {crop_info.get('common_diseases', 'check reference sources')}
+- Unique to {crop}
+
+harvest_window: 
+When to harvest {crop}?
+- Maturity: {crop_info.get('maturity_days', '90-120')} days
+- Harvest around: {sowing_date} + {crop_info.get('maturity_days', 'X')} days
+- Indicators for {crop}
+
+tips: 
+How to grow {crop} successfully?
+- Irrigation: {crop_info.get('irrigation', 'standard')}
+- Specific to {crop}
+
+RESPOND WITH ONLY VALID JSON - NO OTHER TEXT - NO BRACKETS:
+{{
+  "seasonal_plan": "Field preparation for {crop}: {crop_info.get('planting_depth', 'standard depth')}, spacing {crop_info.get('spacing', 'standard spacing')}. Sow {crop} on {sowing_date} in {district}.",
+  "fertilizer_schedule": "{crop} requires NPK {crop_info.get('npk_ratio', 'standard ratio')} applied at {crop_info.get('fertilizer_timing', 'standard timing')}.",
+  "pest_watch": "{crop} commonly faces {crop_info.get('common_pests', 'standard pests')} and {crop_info.get('common_diseases', 'standard diseases')}. Monitor regularly.",
+  "harvest_window": "{crop} matures in {crop_info.get('maturity_days', 'X')} days. Harvest around {sowing_date}.",
+  "tips": "{crop} needs {crop_info.get('irrigation', 'regular irrigation')}. Maintain weed-free field and monitor health."
+}}"""
+        
+        system_prompt = SYSTEM_PROMPTS.get(lang, SYSTEM_PROMPTS["en"])
+        
+        print("=" * 80)
+        print(f"📝 PROMPT SENT TO MODEL [ID: {unique_id}]:")
+        print(f"🌾 CROP: {crop} | DISTRICT: {district} | STATE: {state} | SOWING: {sowing_date}")
+        print(prompt)
+        print("=" * 80)
+        
+        response = get_response(prompt, system_prompt, settings)
+        
+        # Check if response is an error message
+        if response.startswith("Error:"):
+            print(f"⚠️  LLM Error: {response}")
+            return {"error": response}
+        
+        # Extract and parse JSON
+        parsed_json = _extract_json_from_response(response)
+        
+        if parsed_json:
+            print("=" * 80)
+            print("✅ PARSED JSON:")
+            print(json.dumps(parsed_json, indent=2, ensure_ascii=False))
+            print("=" * 80)
+            
+            # Validate crop specificity
+            is_specific = _is_response_crop_specific(parsed_json, crop)
+            
+            if not is_specific:
+                print(f"⚠️  Response is not crop-specific for {crop}")
+                print("   Falling back to knowledge base response...")
+                kb_response = _generate_response_from_knowledge_base(crop, district, state, sowing_date, lang)
+                if kb_response:
+                    return kb_response
+            else:
+                print(f"✅ Response is specific to {crop}")
+            
+            # Validate all required fields are present
+            result = {
+                "seasonal_plan": parsed_json.get("seasonal_plan", "").strip(),
+                "fertilizer_schedule": parsed_json.get("fertilizer_schedule", "").strip(),
+                "pest_watch": parsed_json.get("pest_watch", "").strip(),
+                "harvest_window": parsed_json.get("harvest_window", "").strip(),
+                "tips": parsed_json.get("tips", "").strip()
+            }
+            
+            # Add fallback values for any empty fields
+            fallbacks = FALLBACK_RESPONSES.get(lang, FALLBACK_RESPONSES["en"])
+            for key in result:
+                if not result[key] or len(result[key]) < 5:
+                    print(f"⚠️  Field '{key}' was empty/insufficient, using fallback")
+                    result[key] = fallbacks[key]
+            
+            return result
+        else:
+            # JSON parsing failed, use knowledge base to generate response
+            print("❌ Failed to parse JSON from response")
+            print("   Generating response from knowledge base...")
+            kb_response = _generate_response_from_knowledge_base(crop, district, state, sowing_date, lang)
+            if kb_response:
+                return kb_response
+            
+            # Last resort: use pre-written fallback values
+            print("⚠️  Using pre-written fallback values")
+            return FALLBACK_RESPONSES.get(lang, FALLBACK_RESPONSES["en"])
+        
+    except Exception as e:
+        print(f"❌ Exception in get_crop_advice: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {"error": f"Failed to get crop advice: {str(e)}"}
