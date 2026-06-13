@@ -193,36 +193,6 @@ GOOGLE_API_KEY=your_api_key_here
 ### Local AI
 - **Ollama**: For offline, free AI inference
 
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
-## 📄 License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## 👥 Authors
-
-- [Your Name/Team Name]
-
-## 🙏 Acknowledgments
-
-- Indian farmers for their invaluable feedback
-- Open-source community for amazing tools
-- Government of India for open data initiatives
-
-## 📞 Support
-
-For support, email your.email@example.com or open an issue in the repository.
-
----
-
 **🌾 Kisaan Mitra - Empowering Farmers with AI 🌾**
 
 *Built with ❤️ for Indian Farmers*
