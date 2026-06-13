@@ -1,0 +1,1100 @@
+"""
+Kisaan Mitra - AI-powered multilingual farmer assistant
+Main application entry point
+"""
+
+import sys
+import os
+
+# Add backend to path for imports
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", "backend"))
+
+from config import COMMON_CROPS, OLLAMA_MODELS, CLOUD_MODELS, SUPPORTED_LANGUAGES, INDIAN_STATES
+import streamlit as st
+from i18n_utils import init_language, t, set_language, get_language_name
+
+PAGE_HOME = "home"
+PAGE_CROP_ADVISOR = "crop_advisor"
+PAGE_WEATHER = "weather"
+PAGE_MANDI_PRICES = "mandi_prices"
+PAGE_PEST_DIAGNOSIS = "pest_diagnosis"
+PAGE_SCHEMES = "schemes"
+
+PROVIDER_OLLAMA = "ollama"
+PROVIDER_CLOUD = "cloud"
+
+
+def safe_option_index(options, selected_value, default_index=0):
+    try:
+        return options.index(selected_value)
+    except ValueError:
+        return default_index
+
+# Page configuration
+st.set_page_config(
+    page_title="Kisaan Mitra",
+    page_icon="🌾",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Custom CSS for agricultural theme
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2.5rem;
+        color: #2d5a27;
+        text-align: center;
+        margin-bottom: 1rem;
+    }
+    .sub-header {
+        font-size: 1.2rem;
+        color: #4a7c59;
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    .feature-card {
+        background: linear-gradient(135deg, #f0f9e8 0%, #c8e6c9 100%);
+        border-radius: 15px;
+        padding: 1.5rem;
+        margin: 0.5rem;
+        border: 2px solid #81c784;
+        transition: transform 0.3s ease;
+    }
+    .feature-card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 10px 20px rgba(0,0,0,0.1);
+    }
+    .stButton>button {
+        background-color: #4CAF50;
+        color: white;
+        font-weight: bold;
+        border-radius: 10px;
+        padding: 0.5rem 1rem;
+    }
+    .stButton>button:hover {
+        background-color: #45a049;
+    }
+    .success-box {
+        background-color: #e8f5e9;
+        border-left: 5px solid #4CAF50;
+        padding: 1rem;
+        border-radius: 5px;
+        margin: 1rem 0;
+    }
+    .info-box {
+        background-color: #e3f2fd;
+        border-left: 5px solid #2196F3;
+        padding: 1rem;
+        border-radius: 5px;
+        margin: 1rem 0;
+    }
+    .top-nav {
+        display: flex;
+        gap: 0.6rem;
+        flex-wrap: wrap;
+        justify-content: center;
+        margin: 0.5rem 0 1.5rem 0;
+    }
+    .top-nav button {
+        border: 1px solid #b9d9b8 !important;
+        background: #f5fbf3 !important;
+        color: #2d5a27 !important;
+        border-radius: 999px !important;
+        padding: 0.45rem 1rem !important;
+        font-weight: 600 !important;
+    }
+    .top-nav button:hover {
+        background: #e6f5e4 !important;
+        border-color: #7bbf76 !important;
+    }
+    .top-nav button[kind="primary"] {
+        background: #4CAF50 !important;
+        color: white !important;
+        border-color: #4CAF50 !important;
+    }
+    /* Hide Streamlit's default page navigation */
+    #MainMenu {visibility: hidden;}
+    header {visibility: hidden;}
+    footer {visibility: hidden;}
+    /* Hide the default Streamlit multipage sidebar navigation */
+    div[data-testid="stSidebarNav"],
+    ul[data-testid="stSidebarNavItems"] {
+        display: none !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Initialize language settings
+init_language()
+
+# Initialize AI settings if not present
+if "settings" not in st.session_state:
+    st.session_state.settings = {
+        "provider": PROVIDER_OLLAMA,
+        "model": OLLAMA_MODELS[0],
+        "api_key": ""
+    }
+
+if st.session_state.settings.get("provider") == PROVIDER_OLLAMA:
+    st.session_state.settings["model"] = OLLAMA_MODELS[0]
+    st.session_state["ollama_model"] = OLLAMA_MODELS[0]
+
+# Initialize current_page if not present (Bug Fix #1)
+if "current_page" not in st.session_state:
+    st.session_state["current_page"] = PAGE_HOME
+
+# Initialize floating chat widget state
+if "chat_open" not in st.session_state:
+    st.session_state.chat_open = False
+
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+if "pending_message" not in st.session_state:
+    st.session_state.pending_message = ""
+
+# Sidebar configuration
+with st.sidebar:
+    st.image("https://cdn-icons-png.flaticon.com/512/7408/7408750.png", width=80)
+    st.title(t("app_title"))
+    
+    # Language selector
+    st.subheader(t("sidebar_language"))
+    language_options = [get_language_name(lang) for lang in SUPPORTED_LANGUAGES]
+    selected_language_name = st.selectbox(
+        "",
+        options=language_options,
+        index=SUPPORTED_LANGUAGES.index(st.session_state.lang),
+        label_visibility="collapsed",
+        key="language_selector"
+    )
+    
+    # Update language if changed
+    selected_lang_code = SUPPORTED_LANGUAGES[language_options.index(selected_language_name)]
+    if selected_lang_code != st.session_state.lang:
+        set_language(selected_lang_code)
+    
+    st.divider()
+    
+    # AI Provider selection
+    st.subheader(t("sidebar_ai_provider"))
+    
+    provider = st.radio(
+        "",
+        options=[t("provider_local"), t("provider_cloud")],
+        index=0 if st.session_state.settings["provider"] == PROVIDER_OLLAMA else 1,
+        label_visibility="collapsed",
+        horizontal=False
+    )
+
+    provider_key = PROVIDER_CLOUD if provider == t("provider_cloud") else PROVIDER_OLLAMA
+    
+    # Update provider setting
+    st.session_state.settings["provider"] = provider_key
+
+    if provider_key == PROVIDER_OLLAMA:
+        # Show Ollama model selector
+        st.selectbox(
+            t("sidebar_ollama_model"),
+            options=OLLAMA_MODELS,
+            index=safe_option_index(OLLAMA_MODELS, st.session_state.settings.get("model", "llama3")),
+            key="ollama_model_v2"
+        )
+        st.session_state.settings["model"] = st.session_state.ollama_model_v2
+    else:
+        # Show Cloud model selector (Bug Fix #2 - now visible)
+        st.selectbox(
+            t("sidebar_cloud_model"),
+            options=CLOUD_MODELS,
+            index=safe_option_index(CLOUD_MODELS, st.session_state.settings.get("model", "gpt-4o"), 0),
+            key="cloud_model"
+        )
+        st.session_state.settings["model"] = st.session_state.cloud_model
+        
+        # API key input for cloud provider (Bug Fix #2 - now visible)
+        api_key = st.text_input(
+            t("sidebar_api_key"),
+            type="password",
+            placeholder=t("sidebar_api_key_placeholder"),
+            key="api_key_input"
+        )
+        st.session_state.settings["api_key"] = api_key
+    
+    st.divider()
+
+nav_options = [
+    (PAGE_HOME, t("nav_home")),
+    (PAGE_CROP_ADVISOR, t("nav_crop_advisor")),
+    (PAGE_WEATHER, t("nav_weather")),
+    (PAGE_MANDI_PRICES, t("nav_mandi_prices")),
+    (PAGE_PEST_DIAGNOSIS, t("nav_pest_diagnosis")),
+    (PAGE_SCHEMES, t("nav_schemes"))
+]
+
+st.markdown('<div class="top-nav">', unsafe_allow_html=True)
+nav_cols = st.columns(len(nav_options))
+for index, (page_id, label) in enumerate(nav_options):
+    with nav_cols[index]:
+        button_type = "primary" if st.session_state["current_page"] == page_id else "secondary"
+        if st.button(label, key=f"top_nav_{page_id}", use_container_width=True, type=button_type):
+            st.session_state["current_page"] = page_id
+            st.rerun()
+st.markdown('</div>', unsafe_allow_html=True)
+
+# Main content area - use st.session_state.current_page for routing
+current_page = st.session_state["current_page"]
+
+if current_page == PAGE_HOME:
+    # Home page
+    st.markdown(f'<h1 class="main-header">{t("app_title")}</h1>', unsafe_allow_html=True)
+    st.markdown(f'<p class="sub-header">{t("app_subtitle")}</p>', unsafe_allow_html=True)
+    
+    st.markdown(f"""
+    <div class="success-box">
+        <h3>🌾 {t("home_welcome")}</h3>
+        <p>{t("home_description")}</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown(f"<h2 style='color: #2d5a27;'>{t('home_features_title')}</h2>", unsafe_allow_html=True)
+    
+    # Feature cards in columns
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("""
+        <div class="feature-card">
+            <h3>🌱 Crop Advisor</h3>
+            <p>Get expert advice on crop selection, sowing, fertilizers, and harvest timing</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown("""
+        <div class="feature-card">
+            <h3>🌤️ Weather Forecast</h3>
+            <p>7-day weather forecast with AI-powered farming recommendations</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col3:
+        st.markdown("""
+        <div class="feature-card">
+            <h3>🏪 Mandi Prices</h3>
+            <p>Real-time market prices and AI advice on when and where to sell</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    col4, col5, col6 = st.columns(3)
+    
+    with col4:
+        st.markdown("""
+        <div class="feature-card">
+            <h3>🔍 Pest Diagnosis</h3>
+            <p>Upload crop images for AI-powered disease and pest identification</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col5:
+        st.markdown("""
+        <div class="feature-card">
+            <h3>📋 Govt Schemes</h3>
+            <p>Discover relevant government schemes and subsidies for farmers</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col6:
+        st.markdown("""
+        <div class="feature-card">
+            <h3>🌿 Multilingual</h3>
+            <p>Available in English, Hindi, and Telugu for better accessibility</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Quick action buttons (Bug Fix #1 - Use consistent current_page variable)
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("### 🚀 Quick Actions")
+    
+    col_a, col_b, col_c = st.columns(3)
+    
+    with col_a:
+        if st.button("🌱 " + t("nav_crop_advisor"), use_container_width=True, key="btn_crop"):
+            st.session_state["current_page"] = PAGE_CROP_ADVISOR
+            st.rerun()
+    
+    with col_b:
+        if st.button("🌤️ " + t("nav_weather"), use_container_width=True, key="btn_weather"):
+            st.session_state["current_page"] = PAGE_WEATHER
+            st.rerun()
+    
+    with col_c:
+        if st.button("🏪 " + t("nav_mandi_prices"), use_container_width=True, key="btn_mandi"):
+            st.session_state["current_page"] = PAGE_MANDI_PRICES
+            st.rerun()
+    
+    col_d, col_e, col_f = st.columns(3)
+    
+    with col_d:
+        if st.button("🔍 " + t("nav_pest_diagnosis"), use_container_width=True, key="btn_pest"):
+            st.session_state["current_page"] = PAGE_PEST_DIAGNOSIS
+            st.rerun()
+    
+    with col_e:
+        if st.button("📋 " + t("nav_schemes"), use_container_width=True, key="btn_schemes"):
+            st.session_state["current_page"] = PAGE_SCHEMES
+            st.rerun()
+    
+    with col_f:
+        st.empty()
+
+elif current_page == PAGE_CROP_ADVISOR:
+    # Import and show crop advisor page
+    from pages.crop_advisor_page import show_crop_advisor
+    show_crop_advisor(t, COMMON_CROPS, st.session_state.settings)
+
+elif current_page == PAGE_WEATHER:
+    # Import and show weather page
+    from pages.weather_page import show_weather
+    show_weather(t, COMMON_CROPS, st.session_state.settings)
+
+elif current_page == PAGE_MANDI_PRICES:
+    # Import and show mandi prices page
+    from pages.mandi_prices_page import show_mandi_prices
+    show_mandi_prices(t, COMMON_CROPS, INDIAN_STATES, st.session_state.settings)
+
+elif current_page == PAGE_PEST_DIAGNOSIS:
+    # Import and show pest diagnosis page
+    from pages.pest_diagnosis_page import show_pest_diagnosis
+    show_pest_diagnosis(t, COMMON_CROPS, st.session_state.settings)
+
+elif current_page == PAGE_SCHEMES:
+    # Import and show scheme finder page
+    from pages.scheme_finder_page import show_schemes
+    show_schemes(t, COMMON_CROPS, INDIAN_STATES, st.session_state.settings)
+
+# Render Floating Chat Widget (appears on all pages)
+def render_floating_widget():
+    """Render a floating chat widget at bottom-right (WhatsApp/Intercom style)."""
+    
+    try:
+        from modules.chatbot import get_chatbot_response, format_chat_message, validate_message
+    except ModuleNotFoundError as e:
+        st.error(f"Chat module not available: {str(e)}. Please ensure all dependencies are installed.")
+        return
+    
+    # CSS for floating widget
+    floating_css = """
+    <style>
+        /* Floating Action Button */
+        .fab-button {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #2d5a27 0%, #4CAF50 100%);
+            color: white;
+            border: none;
+            font-size: 28px;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            z-index: 9999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s ease;
+            font-weight: bold;
+            padding: 0;
+        }
+        
+        .fab-button:hover {
+            transform: scale(1.1);
+            box-shadow: 0 6px 20px rgba(76, 175, 80, 0.3);
+        }
+        
+        .fab-button:active {
+            transform: scale(0.95);
+        }
+        
+        /* Chat Widget Container */
+        .chat-widget-container {
+            position: fixed;
+            bottom: 90px;
+            right: 20px;
+            width: 380px;
+            height: 550px;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 5px 40px rgba(0, 0, 0, 0.16);
+            display: flex;
+            flex-direction: column;
+            z-index: 9998;
+            overflow: hidden;
+            animation: slideUp 0.3s ease-out;
+        }
+        
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .chat-header {
+            background: linear-gradient(135deg, #2d5a27 0%, #4CAF50 100%);
+            color: white;
+            padding: 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .chat-header-title {
+            font-size: 1rem;
+            font-weight: 600;
+            margin: 0;
+        }
+        
+        .chat-close-btn {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 1.2rem;
+            cursor: pointer;
+            padding: 0;
+        }
+        
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1rem;
+            background: #f5f5f5;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+        
+        .message {
+            display: flex;
+            animation: fadeIn 0.3s ease;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        
+        .message.user {
+            justify-content: flex-end;
+        }
+        
+        .message-bubble {
+            max-width: 70%;
+            padding: 0.75rem 1rem;
+            border-radius: 12px;
+            font-size: 0.9rem;
+            line-height: 1.4;
+            word-wrap: break-word;
+        }
+        
+        .message.user .message-bubble {
+            background: #4CAF50;
+            color: white;
+            border-radius: 12px 12px 0 12px;
+        }
+        
+        .message.assistant .message-bubble {
+            background: #e8f5e9;
+            color: #333;
+            border-radius: 12px 12px 12px 0;
+        }
+        
+        .chat-welcome {
+            padding: 2rem;
+            text-align: center;
+            color: #666;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100%;
+        }
+        
+        .chat-welcome-emoji {
+            font-size: 3rem;
+            margin: 1rem 0;
+        }
+        
+        .chat-welcome-title {
+            font-size: 1.1rem;
+            margin: 0.5rem 0;
+            font-weight: 600;
+        }
+        
+        .chat-welcome-text {
+            font-size: 0.85rem;
+            margin: 0.3rem 0;
+        }
+        
+        /* Chat Input Section - INSIDE the panel */
+        .chat-input-section {
+            padding: 1rem;
+            background: white;
+            border-top: 1px solid #e0e0e0;
+            display: flex;
+            gap: 0.5rem;
+        }
+        
+        .chat-input-section input {
+            flex: 1;
+            padding: 0.75rem;
+            border: 1px solid #d0d0d0;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            font-family: inherit;
+        }
+        
+        .chat-input-section input:focus {
+            outline: none;
+            border-color: #4CAF50;
+            box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.1);
+        }
+        
+        .chat-input-section button {
+            padding: 0.75rem 1rem;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 20px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+        
+        .chat-input-section button:hover {
+            background: #45a049;
+        }
+        
+        .chat-input-section button:active {
+            transform: scale(0.95);
+        }
+        
+        /* Scrollbar */
+        .chat-messages::-webkit-scrollbar {
+            width: 6px;
+        }
+        
+        .chat-messages::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+        
+        .chat-messages::-webkit-scrollbar-thumb {
+            background: #4CAF50;
+            border-radius: 3px;
+        }
+        
+        /* Hide Streamlit widgets used for message handling */
+        [data-testid="stHorizontalBlock"] .stTextInput:last-child {
+            display: none !important;
+        }
+    </style>
+    """
+    
+    st.markdown(floating_css, unsafe_allow_html=True)
+    
+    # Create pure HTML floating action button
+    fab_html = """
+    <button class="fab-button" id="fab-button" onclick="document.getElementById('streamlit_chat_toggle').click();">💬</button>
+    """
+    st.markdown(fab_html, unsafe_allow_html=True)
+    
+    # Initialize session state
+    if "chat_open" not in st.session_state:
+        st.session_state.chat_open = False
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+    if "chat_pending_message" not in st.session_state:
+        st.session_state.chat_pending_message = ""
+    
+    # Hidden toggle button for state management (not visible)
+    with st.container():
+        st.markdown('<div style="display:none;height:0;overflow:hidden;">', unsafe_allow_html=True)
+        toggle_button = st.button(
+            "toggle",
+            key="streamlit_chat_toggle",
+            help=""
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    if toggle_button:
+        st.session_state.chat_open = not st.session_state.chat_open
+        st.rerun()
+    
+    # Render chat widget if open
+    if st.session_state.chat_open:
+        # Build messages HTML
+        messages_html = ""
+        
+        if not st.session_state.chat_history:
+            messages_html = '<div class="chat-welcome"><div class="chat-welcome-emoji">🌾</div><div class="chat-welcome-title">नमस्ते Namaste!</div><div class="chat-welcome-text">Ask me anything about farming</div><div class="chat-welcome-text">English • हिंदी • తెలుగు</div></div>'
+        else:
+            for msg in st.session_state.chat_history:
+                msg_class = "user" if msg["role"] == "user" else "assistant"
+                msg_icon = "👨‍🌾" if msg["role"] == "user" else "🤖"
+                msg_content = msg["content"].replace('<', '&lt;').replace('>', '&gt;')
+                messages_html += f'<div class="message {msg_class}"><div class="message-bubble">{msg_icon} {msg_content}</div></div>'
+        
+        # Include input form inside the chat panel HTML
+        chat_panel_html = f'<div class="chat-widget-container"><div class="chat-header"><h3 class="chat-header-title">💬 Kisaan Mitra</h3><button class="chat-close-btn" onclick="document.getElementById(\'streamlit_chat_toggle\').click();">✕</button></div><div class="chat-messages">{messages_html}</div><form class="chat-input-section" id="chat-form" onsubmit="event.preventDefault(); const msg = document.getElementById(\'chat-input-field\').value.trim(); if(msg) {{ document.getElementById(\'chat_msg_input\').value = msg; document.getElementById(\'chat_msg_input\').dispatchEvent(new Event(\'change\', {{bubbles: true}})); document.getElementById(\'chat-input-field\').value = \'\'; }}
+    <style>
+        /* Floating Action Button */
+        .fab-button {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #2d5a27 0%, #4CAF50 100%);
+            color: white;
+            border: none;
+            font-size: 28px;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            z-index: 9999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s ease;
+            font-weight: bold;
+            padding: 0;
+        }
+        
+        .fab-button:hover {
+            transform: scale(1.1);
+            box-shadow: 0 6px 20px rgba(76, 175, 80, 0.3);
+        }
+        
+        .fab-button:active {
+            transform: scale(0.95);
+        }
+        
+        /* Chat Widget Container */
+        .chat-widget-container {
+            position: fixed;
+            bottom: 90px;
+            right: 20px;
+            width: 380px;
+            height: 550px;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 5px 40px rgba(0, 0, 0, 0.16);
+            display: flex;
+            flex-direction: column;
+            z-index: 9998;
+            overflow: hidden;
+            animation: slideUp 0.3s ease-out;
+        }
+        
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .chat-header {
+            background: linear-gradient(135deg, #2d5a27 0%, #4CAF50 100%);
+            color: white;
+            padding: 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .chat-header-title {
+            font-size: 1rem;
+            font-weight: 600;
+            margin: 0;
+        }
+        
+        .chat-close-btn {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 1.2rem;
+            cursor: pointer;
+            padding: 0;
+        }
+        
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1rem;
+            background: #f5f5f5;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+        
+        .message {
+            display: flex;
+            animation: fadeIn 0.3s ease;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        
+        .message.user {
+            justify-content: flex-end;
+        }
+        
+        .message-bubble {
+            max-width: 70%;
+            padding: 0.75rem 1rem;
+            border-radius: 12px;
+            font-size: 0.9rem;
+            line-height: 1.4;
+            word-wrap: break-word;
+        }
+        
+        .message.user .message-bubble {
+            background: #4CAF50;
+            color: white;
+            border-radius: 12px 12px 0 12px;
+        }
+        
+        .message.assistant .message-bubble {
+            background: #e8f5e9;
+            color: #333;
+            border-radius: 12px 12px 12px 0;
+        }
+        
+        .chat-welcome {
+            padding: 2rem;
+            text-align: center;
+            color: #666;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100%;
+        }
+        
+        .chat-welcome-emoji {
+            font-size: 3rem;
+            margin: 1rem 0;
+        }
+        
+        .chat-welcome-title {
+            font-size: 1.1rem;
+            margin: 0.5rem 0;
+            font-weight: 600;
+        }
+        
+        .chat-welcome-text {
+            font-size: 0.85rem;
+            margin: 0.3rem 0;
+        }
+        
+        /* Chat Input Section - INSIDE the panel */
+        .chat-input-section {
+            padding: 1rem;
+            background: white;
+            border-top: 1px solid #e0e0e0;
+            display: flex;
+            gap: 0.5rem;
+        }
+        
+        .chat-input-section input {
+            flex: 1;
+            padding: 0.75rem;
+            border: 1px solid #d0d0d0;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            font-family: inherit;
+        }
+        
+        .chat-input-section input:focus {
+            outline: none;
+            border-color: #4CAF50;
+            box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.1);
+        }
+        
+        .chat-input-section button {
+            padding: 0.75rem 1rem;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 20px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+        
+        .chat-input-section button:hover {
+            background: #45a049;
+        }
+        
+        .chat-input-section button:active {
+            transform: scale(0.95);
+        }
+        
+        /* Scrollbar */
+        .chat-messages::-webkit-scrollbar {
+            width: 6px;
+        }
+        
+        .chat-messages::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+        
+        .chat-messages::-webkit-scrollbar-thumb {
+            background: #4CAF50;
+            border-radius: 3px;
+        }
+    </style>
+    """
+    
+    st.markdown(floating_css, unsafe_allow_html=True)
+    
+    # Create pure HTML floating action button with onclick handler
+    fab_html = """
+    <button class="fab-button" id="fab-button" onclick="toggleChatPanel();">💬</button>
+    <script>
+    window.toggleChatPanel = function() {
+        // Find and click the hidden Streamlit toggle button
+        const toggleBtn = Array.from(document.querySelectorAll('button')).find(
+            btn => btn.getAttribute('data-chat-toggle') === 'true'
+        );
+        if (toggleBtn) {
+            toggleBtn.click();
+        }
+    };
+    </script>
+    """
+    
+    st.markdown(fab_html, unsafe_allow_html=True)
+    
+    # Hidden toggle button for Streamlit state management
+    col_hidden = st.columns([1])[0]
+    with col_hidden:
+        # Store toggle button reference for JavaScript interaction
+        toggle_button = st.button(
+            "🔘",
+            key="fab_toggle",
+            help="",
+            use_container_width=True
+        )
+    
+    # Hide the toggle button with CSS
+    st.markdown(
+        """
+        <script>
+        // Hide the FAB toggle button from view
+        document.addEventListener('DOMContentLoaded', function() {
+            const buttons = document.querySelectorAll('button');
+            for (let btn of buttons) {
+                // Find button by checking its text content or data attributes
+                if (btn.textContent.includes('🔘')) {
+                    btn.style.display = 'none';
+                    break;
+                }
+            }
+        });
+        
+        window.toggleChatPanel = function() {
+            // Trigger the hidden button
+            const buttons = document.querySelectorAll('button');
+            for (let btn of buttons) {
+                if (btn.textContent.includes('🔘')) {
+                    btn.click();
+                    break;
+                }
+            }
+        };
+        </script>
+        """,
+        unsafe_allow_html=True
+    )
+    
+    if toggle_button:
+        st.session_state.chat_open = not st.session_state.chat_open
+        st.rerun()
+    
+    # Render chat widget if open - with input form inside the panel
+    if st.session_state.chat_open:
+        # Build messages HTML
+        messages_html = ""
+        
+        if not st.session_state.chat_history:
+            messages_html = '<div class="chat-welcome"><div class="chat-welcome-emoji">🌾</div><div class="chat-welcome-title">नमस्ते Namaste!</div><div class="chat-welcome-text">Ask me anything about farming</div><div class="chat-welcome-text">English • हिंदी • తెలుగు</div></div>'
+        else:
+            for msg in st.session_state.chat_history:
+                msg_class = "user" if msg["role"] == "user" else "assistant"
+                msg_icon = "👨‍🌾" if msg["role"] == "user" else "🤖"
+                msg_content = msg["content"].replace('<', '&lt;').replace('>', '&gt;')
+                messages_html += '<div class="message ' + msg_class + '"><div class="message-bubble">' + msg_icon + ' ' + msg_content + '</div></div>'
+        
+        # Include input form inside the chat panel HTML
+        chat_panel_html = '<div class="chat-widget-container"><div class="chat-header"><h3 class="chat-header-title">💬 Kisaan Mitra</h3><button class="chat-close-btn" onclick="toggleChatPanel();">✕</button></div><div class="chat-messages">' + messages_html + '</div><form class="chat-input-section" id="chat-form" onsubmit="handleChatSubmit(event); return false;"><input type="text" id="chat-input-field" placeholder="Ask about farming, crops, weather..." required /><button type="submit">📤</button></form></div>'
+        st.markdown(chat_panel_html, unsafe_allow_html=True)
+        
+        # Initialize session state for pending message
+        if "chat_pending_message" not in st.session_state:
+            st.session_state.chat_pending_message = ""
+        
+        # Create a hidden container for Streamlit message processing
+        # This fully hides the input from view using CSS
+        with st.container():
+            st.markdown("""
+            <style>
+                /* Hide the chat pending input container */
+                .stContainer:has([data-testid="textInput"]) {
+                    display: none !important;
+                    height: 0 !important;
+                    overflow: hidden !important;
+                }
+            </style>
+            """, unsafe_allow_html=True)
+            
+            # Streamlit requires at least one widget to trigger state updates
+            # This hidden input serves as the message receiver from JavaScript
+            msg_input = st.text_input(
+                label="",
+                key="chat_pending_input",
+                placeholder="",
+            )
+            
+            # Process any pending message
+            if msg_input and msg_input.strip():
+                st.session_state.chat_pending_message = msg_input.strip()
+                st.session_state.chat_pending_input = ""  # Clear for next message
+        
+        # JavaScript to handle form submission and communicate with Streamlit
+        st.markdown("""
+        <script>
+        window.chatMessageSent = false;  // Prevent duplicate submissions
+        
+        window.handleChatSubmit = function(event) {
+            event.preventDefault();
+            if (window.chatMessageSent) return;  // Prevent double-submit
+            
+            const input = document.getElementById('chat-input-field');
+            const message = input.value.trim();
+            
+            if (message) {
+                window.chatMessageSent = true;
+                
+                // Find the hidden Streamlit text input with key "chat_pending_input"
+                const allInputs = document.querySelectorAll('input[type="text"]');
+                let found = false;
+                
+                for (let i = 0; i < allInputs.length; i++) {
+                    const inp = allInputs[i];
+                    // Try to find our hidden input (usually near the end)
+                    if (i === allInputs.length - 1 || inp.style.display === 'none' || !inp.offsetParent) {
+                        try {
+                            inp.value = message;
+                            inp.dispatchEvent(new Event('input', { bubbles: true }));
+                            inp.dispatchEvent(new Event('change', { bubbles: true }));
+                            
+                            // Trigger Streamlit rerun via hidden buttons or form
+                            const hiddenBtn = document.querySelector('button[key="fab_toggle"]');
+                            if (hiddenBtn) {
+                                setTimeout(() => {
+                                    hiddenBtn.click();
+                                    setTimeout(() => hiddenBtn.click(), 100);
+                                }, 50);
+                                found = true;
+                                break;
+                            }
+                        } catch (e) {
+                            console.log("Trying next input...");
+                        }
+                    }
+                }
+                
+                // Clear the form input
+                input.value = '';
+                window.chatMessageSent = false;
+            }
+        };
+        </script>
+        """, unsafe_allow_html=True)
+        
+        # Process pending message from JavaScript
+        if st.session_state.chat_pending_message:
+            user_input = st.session_state.chat_pending_message
+            print(f"[DEBUG] Chat: Processing message: {user_input}")  # Debug print
+            
+            is_valid, error_msg = validate_message(user_input)
+            print(f"[DEBUG] Chat: Message valid: {is_valid}, error: {error_msg}")  # Debug print
+            
+            if is_valid:
+                # Add user message to history
+                user_message = format_chat_message("user", user_input)
+                st.session_state.chat_history.append(user_message)
+                print(f"[DEBUG] Chat: User message added to history. History length: {len(st.session_state.chat_history)}")  # Debug print
+                
+                # Clear pending message
+                st.session_state.chat_pending_message = ""
+                
+                try:
+                    llm_settings = {
+                        "provider": st.session_state.settings.get("provider", "ollama"),
+                        "model": st.session_state.settings.get("model", "llama3.2:1b"),
+                        "api_key": st.session_state.settings.get("api_key", "")
+                    }
+                    
+                    print(f"[DEBUG] Chat: LLM Settings: provider={llm_settings['provider']}, model={llm_settings['model']}")  # Debug print
+                    
+                    with st.spinner("🤔 Kisaan Mitra is thinking..."):
+                        response = get_chatbot_response(
+                            user_message=user_input,
+                            chat_history=st.session_state.chat_history[:-1],  # Exclude user message we just added
+                            settings=llm_settings
+                        )
+                    
+                    print(f"[DEBUG] Chat: Response received: {response[:100] if response else 'None'}...")  # Debug print
+                    
+                    assistant_message = format_chat_message("assistant", response)
+                    st.session_state.chat_history.append(assistant_message)
+                    print(f"[DEBUG] Chat: History length after response: {len(st.session_state.chat_history)}")  # Debug print
+                    st.rerun()
+                    
+                except Exception as e:
+                    print(f"[DEBUG] Chat: Exception occurred: {str(e)}")  # Debug print
+                    error_response = f"❌ {str(e)}"
+                    error_msg_obj = format_chat_message("assistant", error_response)
+                    st.session_state.chat_history.append(error_msg_obj)
+                    st.rerun()
+            else:
+                st.session_state.chat_pending_message = ""  # Clear invalid message
+
+# Render floating widget
+render_floating_widget()
+
+# Footer
+st.markdown("---")
+st.markdown(
+    """
+    <div style='text-align: center; color: #666; padding: 1rem;'>
+        <p>🌾 Kisaan Mitra - Empowering Farmers with AI 🌾</p>
+        <p style='font-size: 0.8rem;'>Built with ❤️ for Indian Farmers</p>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
