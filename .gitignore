@@ -59,4 +59,6 @@ data/
 # Model files (if using local models)
 models/
 *.bin
-*.gguf
+*.gguf__pycache__/
+venv/
+*.pyc
